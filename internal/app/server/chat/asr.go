@@ -834,6 +834,20 @@ func (a *ASRManager) StartAsrRecognitionLoop(
 					}
 				}
 
+				// Key clicks and background noise come back as "嗯。" and would
+				// start an LLM turn (and keep auto mode looping). Drop them like
+				// an empty result and keep listening.
+				if asrFillerFilterEnabled() && isFillerOnlyASRText(text) {
+					log.Infof("丢弃仅含语气词的ASR结果: device=%s, text=%q", state.DeviceID, text)
+					state.Asr.ClearHistoryAudio()
+					if state.UsesAudioIdleClock() {
+						startAudioIdle()
+					} else {
+						state.ResetAudioIdleWindow()
+					}
+					continue
+				}
+
 				if a.session != nil {
 					allowChat, denyReason := a.session.ShouldAllowSpeakerChat(speakerResult, speakerInterrupted)
 					if !allowChat {
