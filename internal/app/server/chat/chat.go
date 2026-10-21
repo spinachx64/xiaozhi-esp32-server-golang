@@ -56,6 +56,12 @@ type ChatManager struct {
 	lastSpeakPathWarmAt atomic.Int64
 	speakReadyTimeout   time.Duration
 
+	// The device reports speak_done after a server-initiated announcement
+	// (hello feature "speak_done"); see delegate_speech.go.
+	speakDoneSupported atomic.Bool
+	speakDoneMu        sync.Mutex
+	speakDone          *speakDoneWaiter
+
 	// Close 保护，防止多次关闭
 	closeOnce      sync.Once
 	managerClosing atomic.Bool
@@ -437,6 +443,9 @@ func (c *ChatManager) handleTextMessage(message []byte) error {
 		return c.HandleHelloMessage(&clientMsg)
 	case MessageTypeSpeakReady:
 		return c.HandleSpeakReadyMessage(&clientMsg)
+	case MessageTypeSpeakDone:
+		c.handleSpeakDoneMessage(&clientMsg)
+		return nil
 	case MessageTypeListen:
 		return c.HandleListenMessage(&clientMsg)
 	case MessageTypeAbort:
@@ -469,6 +478,7 @@ func (c *ChatManager) HandleHelloMessage(msg *ClientMessage) error {
 	c.helloMu.Lock()
 	defer c.helloMu.Unlock()
 
+	c.speakDoneSupported.Store(msg.Features["speak_done"])
 	clientState := c.clientState
 	clientState.InputAudioFormat = *msg.AudioParams
 	isFirstHello := !c.helloInited
@@ -702,6 +712,16 @@ func (c *ChatManager) HandleSpeakReadyMessage(msg *ClientMessage) error {
 	if c.serverTransport == nil || c.serverTransport.GetTransportType() != types_conn.TransportTypeMqttUdp {
 		return nil
 	}
+	if msg.State == MessageStateBusy {
+		c.speakRequestMu.Lock()
+		pending := c.pendingSpeakRequest
+		c.speakRequestMu.Unlock()
+		if pending != nil && (pending.sessionID == "" || strings.TrimSpace(msg.SessionID) == pending.sessionID) {
+			log.Infof("设备 %s 拒绝主动播报（busy），稍后重试", c.DeviceID)
+			c.finishPendingSpeakRequest(pending, ErrSpeakBusy)
+		}
+		return nil
+	}
 	if msg.State != "" && msg.State != MessageStateReady {
 		log.Debugf("设备 %s speak_ready 状态不是 ready，忽略: %+v", c.DeviceID, msg)
 		return nil
@@ -725,6 +745,7 @@ func (c *ChatManager) HandleSpeakReadyMessage(msg *ClientMessage) error {
 
 	c.markSpeakPathWarm(time.Now())
 	c.clearMqttRebootstrapPending("speak_ready")
+	c.armSpeakDone()
 	c.finishPendingSpeakRequest(pending, nil)
 
 	reuseExisting := false

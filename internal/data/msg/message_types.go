@@ -31,6 +31,7 @@ const (
 	MessageTypeMcp        = "mcp"         // MCP消息
 	MessageTypeGoodBye    = "goodbye"     // 再见消息
 	MessageTypeSpeakReady = "speak_ready" // 设备已准备好接收主动播报
+	MessageTypeSpeakDone  = "speak_done"  // 主动播报结束，带实际播放帧数
 )
 
 // 服务器消息类型常量
@@ -55,6 +56,7 @@ const (
 	MessageStateAbort         = "abort"          // 中止状态
 	MessageStateSuccess       = "success"        // 成功状态
 	MessageStateReady         = "ready"          // 设备已准备好
+	MessageStateBusy          = "busy"           // 设备忙，拒绝主动播报
 )
 
 type UdpConfig struct {

@@ -713,4 +713,7 @@ type ClientMessage struct {
 	AudioParams    *AudioFormat         `json:"audio_params,omitempty"`
 	SpeakUDPConfig *SpeakReadyUDPConfig `json:"udp_config,omitempty"`
 	PayLoad        json.RawMessage      `json:"payload,omitempty"`
+	// speak_done: audio packets received and frames written to the speaker.
+	Packets      int `json:"packets,omitempty"`
+	PlayedFrames int `json:"played_frames,omitempty"`
 }

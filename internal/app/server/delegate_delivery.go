@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"xiaozhi-esp32-server-golang/internal/app/server/chat"
 	"xiaozhi-esp32-server-golang/internal/domain/delegate"
 	log "xiaozhi-esp32-server-golang/logger"
 
@@ -20,6 +21,7 @@ const (
 	delegateIdleChecks     = 3 // consecutive idle polls before announcing
 	delegateMaxInterrupted = 3 // per result and connection; afterwards wait for the next attach
 	delegateMaxInjectFails = 3
+	delegateMaxBusy        = 20 // busy replies per connection before waiting for the next attach
 )
 
 // Variables so tests can shorten them.
@@ -118,6 +120,7 @@ func (d *delegateDelivery) kick(deviceID string) {
 func (d *delegateDelivery) deliverAll(deviceID string) {
 	interrupted := map[string]int{}
 	injectFails := 0
+	busy := 0
 	for d.mgr.HasPending(deviceID) {
 		cm, ok := d.waitIdle(deviceID)
 		if !ok {
@@ -134,6 +137,18 @@ func (d *delegateDelivery) deliverAll(deviceID string) {
 
 		played := make(chan bool, 1)
 		err := cm.InjectDelegateSpeech(delegate.Announcement(r), func(ok bool) { played <- ok })
+		if errors.Is(err, chat.ErrSpeakBusy) {
+			// The device was in a conversation after all (e.g. the user just
+			// pressed the button). Not a failure: wait for idle and try again.
+			d.mgr.Requeue(deviceID, r)
+			busy++
+			log.Infof("[delegate] device=%s task=%s device busy (%d), retry when idle", deviceID, r.TaskID, busy)
+			if busy >= delegateMaxBusy {
+				return
+			}
+			time.Sleep(delegateRetryDelay)
+			continue
+		}
 		if err != nil {
 			d.mgr.Requeue(deviceID, r)
 			injectFails++

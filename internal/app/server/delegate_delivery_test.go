@@ -6,8 +6,26 @@ import (
 	"testing"
 	"time"
 
+	"xiaozhi-esp32-server-golang/internal/app/server/chat"
 	"xiaozhi-esp32-server-golang/internal/domain/delegate"
 )
+
+// A device that answers "busy" (the user started talking right after the idle
+// check) keeps the result and gets it once it accepts; busy is not a failure.
+func TestDeliveryRetriesWhenDeviceBusy(t *testing.T) {
+	bridge := &fakeBridge{}
+	d, table, mgr := setup(t, bridge)
+	dev1 := &fakeDevice{busyReplies: delegateMaxInjectFails + 1}
+	table.set(dev, dev1)
+	detach := d.attach(dev)
+	defer detach()
+
+	if _, err := mgr.Submit(dev, "任务", ""); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "announcement after busy replies", func() bool { return dev1.count() == 1 })
+	eventually(t, "ack", func() bool { return len(bridge.ackedIDs()) == 1 })
+}
 
 // fakeBridge runs tasks instantly (or when released) and records fetch/ack.
 type fakeBridge struct {
@@ -55,6 +73,8 @@ type fakeDevice struct {
 	plays    []bool
 	injected []string
 	busySeen bool // an injection happened while busy
+
+	busyReplies int // next injections answer speak_ready "busy"
 }
 
 func (f *fakeDevice) IsConversationActive() bool {
@@ -65,6 +85,11 @@ func (f *fakeDevice) IsConversationActive() bool {
 
 func (f *fakeDevice) InjectDelegateSpeech(text string, onSpoken func(bool)) error {
 	f.mu.Lock()
+	if f.busyReplies > 0 {
+		f.busyReplies--
+		f.mu.Unlock()
+		return chat.ErrSpeakBusy
+	}
 	if f.busy {
 		f.busySeen = true
 	}
