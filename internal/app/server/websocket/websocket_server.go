@@ -33,6 +33,25 @@ type WebSocketServer struct {
 	onNewConnection    types.OnNewConnection
 	onOpenClawResponse func(event openclaw.ResponseDelivery) bool
 	onInjectMessage    func(deviceID, message string, skipLlm bool, autoListen bool) error
+	// adminAuth guards /admin/* routes; it writes the error response itself.
+	adminAuth   func(w http.ResponseWriter, r *http.Request) bool
+	extraRoutes []func(mux *http.ServeMux)
+}
+
+// WithAdminAuth sets the check applied to /admin/inject_msg.
+func WithAdminAuth(check func(w http.ResponseWriter, r *http.Request) bool) WebSocketServerOption {
+	return func(s *WebSocketServer) {
+		s.adminAuth = check
+	}
+}
+
+// WithRoutes registers additional HTTP routes on the server's mux.
+func WithRoutes(register func(mux *http.ServeMux)) WebSocketServerOption {
+	return func(s *WebSocketServer) {
+		if register != nil {
+			s.extraRoutes = append(s.extraRoutes, register)
+		}
+	}
 }
 
 // Option 类型定义
@@ -114,6 +133,9 @@ func (s *WebSocketServer) Start() error {
 	http.HandleFunc("/xiaozhi/api/vision", s.handleVisionAPI) //图片识别API
 
 	http.HandleFunc("/admin/inject_msg", s.handleInjectMsg)
+	for _, register := range s.extraRoutes {
+		register(http.DefaultServeMux)
+	}
 
 	listenAddr := fmt.Sprintf("0.0.0.0:%d", s.port)
 	log.Infof("WebSocket 服务器启动在 ws://%s/xiaozhi/v1/", listenAddr)
@@ -242,6 +264,9 @@ func findQueryValue(values url.Values, keys []string) (string, string) {
 func (s *WebSocketServer) handleInjectMsg(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.adminAuth != nil && !s.adminAuth(w, r) {
 		return
 	}
 	if s.onInjectMessage == nil {

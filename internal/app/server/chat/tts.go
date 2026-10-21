@@ -1388,6 +1388,7 @@ func (t *TTSManager) handleTts(ctx context.Context, generation uint64, metricCyc
 			}
 			if !firstAudioReported {
 				t.markTtsMetricFirstAudio(ctx, metricCycle)
+				markTTSTurnAudio(ctx)
 				firstAudioReported = true
 			}
 			frameCopy := make([]byte, len(frame))
@@ -1887,6 +1888,7 @@ func (t *TTSManager) handleDualStreamTts(item TTSQueueItem) (bool, error) {
 		if len(event.Audio) > 0 {
 			if !firstAudioReported {
 				t.markTtsMetricFirstAudio(item.ctx, item.metricCycle)
+				markTTSTurnAudio(item.ctx)
 				firstAudioReported = true
 			}
 			frameCopy := make([]byte, len(event.Audio))
@@ -2004,6 +2006,7 @@ func (t *TTSManager) handleStreamTts(item TTSQueueItem) error {
 					}
 					if !firstAudioReported {
 						t.markTtsMetricFirstAudio(item.ctx, item.metricCycle)
+						markTTSTurnAudio(item.ctx)
 						firstAudioReported = true
 					}
 					frameCopy := make([]byte, len(frame))

@@ -392,6 +392,19 @@ local_mcp:
   exit_conversation: true           # 允许退出对话
   clear_conversation_history: true  # 允许清除对话历史
 
+# 管理接口鉴权（/admin/inject_msg、/api/tasks*）。为空时这些接口返回 503。
+# 也可以用环境变量 XIAOZHI_ADMIN_TOKEN 提供。
+admin_api:
+  token: ""
+
+# 后台长任务（agent-bridge）。设备空闲时播报结果，离线期间的结果在下次上线时补播。
+delegate:
+  enabled: false
+  bridge_url: "ws://127.0.0.1:8787/ws"
+  token: ""              # 为空时读取环境变量 AGENT_BRIDGE_TOKEN
+  task_timeout: 30m
+  max_concurrent: 1      # 每台设备同时运行的任务数
+
 # Memory 长记忆配置
 memory:
   provider: "nomemo"  # 记忆提供商: nomemo(无长记忆) llm(短期对话记忆,基于Redis) 或 memobase(长期记忆)

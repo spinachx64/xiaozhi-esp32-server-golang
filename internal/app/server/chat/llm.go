@@ -110,6 +110,9 @@ type llmResponseChannelOptions struct {
 	onEndFunc          func(err error, args ...any)
 	onTTSPlaybackStart func()
 	ttsTurnEndPolicy   ttsTurnEndPolicy
+	// onSpoken reports whether injected text played to the end. An interrupted
+	// turn still ends with a nil error, so the turn context is checked as well.
+	onSpoken func(played bool)
 }
 
 type ttsPlaybackStartHook func()
@@ -204,6 +207,35 @@ type ttsTurnTracker struct {
 	mu      sync.Mutex
 	pending int
 	doneCh  chan struct{}
+	err     error // first error reported by a TTS item of the turn
+	audio   bool  // at least one audio frame was produced in the turn
+}
+
+// MarkAudio records that the turn produced audio. Some providers end a failed
+// request (e.g. an HTTP timeout) by closing their output without an error, so
+// "no error" alone does not mean anything was played.
+func (t *ttsTurnTracker) MarkAudio() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.audio = true
+	t.mu.Unlock()
+}
+
+// HadAudio reports whether MarkAudio was called.
+func (t *ttsTurnTracker) HadAudio() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.audio
+}
+
+// markTTSTurnAudio marks the turn tracker carried by ctx, if any.
+func markTTSTurnAudio(ctx context.Context) {
+	ttsTurnTrackerFromContext(ctx).MarkAudio()
 }
 
 func newTTSTurnTracker() *ttsTurnTracker {
@@ -225,10 +257,13 @@ func (t *ttsTurnTracker) Add() func(error) {
 	t.mu.Unlock()
 
 	var once sync.Once
-	return func(error) {
+	return func(err error) {
 		once.Do(func() {
 			t.mu.Lock()
 			defer t.mu.Unlock()
+			if err != nil && t.err == nil {
+				t.err = err
+			}
 			if t.pending == 0 {
 				return
 			}
@@ -238,6 +273,17 @@ func (t *ttsTurnTracker) Add() func(error) {
 			}
 		})
 	}
+}
+
+// Err returns the first error a TTS item of the turn ended with, such as a
+// failed synthesis. The turn itself still ends without error in that case.
+func (t *ttsTurnTracker) Err() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
 }
 
 func (t *ttsTurnTracker) Wait(ctx context.Context) error {
@@ -599,6 +645,16 @@ func (l *LLMManager) AddTextToTTSQueueWithOptions(text string, options llmRespon
 	ctx := l.clientState.AfterAsrSessionCtx.Get(sessionCtx)
 	ctx = withTTSPlaybackStartHook(ctx, options.onTTSPlaybackStart)
 	ctx = withTTSTurnEndPolicy(ctx, options.ttsTurnEndPolicy)
+	if options.onSpoken != nil {
+		// Create the turn tracker here so the end hook can see TTS item errors;
+		// handleLLMResponseChannelAsync reuses an existing tracker.
+		ctx = ensureTTSTurnTrackerInContext(ctx)
+		onSpoken, turnCtx, tracker := options.onSpoken, ctx, ttsTurnTrackerFromContext(ctx)
+		// stopSpeaking cancels AfterAsrSessionCtx, the parent of turnCtx.
+		options.onEndFunc = chainLLMResponseEndHooks(options.onEndFunc, func(err error, _ ...any) {
+			onSpoken(err == nil && turnCtx.Err() == nil && tracker.Err() == nil && tracker.HadAudio())
+		})
+	}
 	if err := l.HandleLLMResponseChannelAsyncWithOptions(ctx, msg, llmResponseChan, options); err != nil {
 		log.Warnf("AddTextToTTSQueue enqueue failed: %v", err)
 		return err

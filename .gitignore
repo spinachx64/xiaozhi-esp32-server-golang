@@ -7,3 +7,6 @@ node_modules/
 config_shijingbo.json
 config_shijingbo.yaml
 .idea
+
+# manager sqlite data (contains provider API keys)
+manager/backend/data/

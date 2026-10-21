@@ -89,6 +89,15 @@ func (h *DeviceHook) OnDisconnect(cl *mqttServer.Client, err error, ok bool) {
 		log.Infof("客户端 %s 已被同ID新连接接管，跳过取消订阅和离线生命周期发布", cl.ID)
 		return
 	}
+	// The device reconnects with the same client ID. The new connection can be
+	// established (and subscribed) before the old one's disconnect runs, and
+	// IsTakenOver is not always set then. Unsubscribing by ID here would remove
+	// the new connection's subscription, so server messages stop reaching the
+	// device while it still looks online.
+	if current, ok := h.server.Clients.Get(cl.ID); ok && current != cl {
+		log.Infof("客户端 %s 已有新连接，跳过旧连接的取消订阅和离线生命周期发布", cl.ID)
+		return
+	}
 	if mac == "" {
 		log.Infof("OnDisconnect: 无法从客户端ID解析MAC地址, clientID=%s, err=%v, ok=%v", cl.ID, err, ok)
 		return
