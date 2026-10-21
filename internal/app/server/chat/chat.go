@@ -1241,6 +1241,13 @@ func (c *ChatManager) InjectMessage(message string, skipLlm bool, autoListen boo
 }
 
 func (c *ChatManager) prepareSpeakPathForInjectedSpeech(previewText string, autoListen bool) error {
+	return c.prepareSpeakPath(previewText, autoListen, false)
+}
+
+// prepareSpeakPath sends speak_request when needed. With always set it is sent
+// even over a warm channel: the device then checks it is idle (answering busy
+// otherwise) and reports speak_done, which background announcements rely on.
+func (c *ChatManager) prepareSpeakPath(previewText string, autoListen bool, always bool) error {
 	if c == nil || c.serverTransport == nil {
 		return nil
 	}
@@ -1248,7 +1255,7 @@ func (c *ChatManager) prepareSpeakPathForInjectedSpeech(previewText string, auto
 		log.Debugf("设备 %s 注入消息跳过 speak_request: transport=%s", c.DeviceID, c.serverTransport.GetTransportType())
 		return nil
 	}
-	if !c.shouldSendSpeakRequest(time.Now()) {
+	if !always && !c.shouldSendSpeakRequest(time.Now()) {
 		log.Debugf("设备 %s 注入消息复用现有播报链路，跳过 speak_request", c.DeviceID)
 		return nil
 	}

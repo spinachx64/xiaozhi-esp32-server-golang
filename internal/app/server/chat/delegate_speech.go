@@ -32,7 +32,9 @@ type speakDoneWaiter struct {
 func (c *ChatManager) InjectDelegateSpeech(text string, onSpoken func(played bool)) error {
 	c.cancelRetainedSessionCleanup("delegate_result")
 	waiter := c.newSpeakDoneWaiter()
-	if err := c.prepareSpeakPathForInjectedSpeech(text, false); err != nil {
+	// Always handshake, never reuse a warm channel: right after a conversation
+	// the channel is still warm while the user may already be talking again.
+	if err := c.prepareSpeakPath(text, false, true); err != nil {
 		c.dropSpeakDoneWaiter(waiter)
 		return err
 	}

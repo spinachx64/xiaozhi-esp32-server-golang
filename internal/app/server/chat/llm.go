@@ -117,6 +117,9 @@ type llmResponseChannelOptions struct {
 
 type ttsPlaybackStartHook func()
 
+// llmErrorSpeech replaces the raw error text when the LLM request fails.
+const llmErrorSpeech = "抱歉，我这边出了点问题，稍后再试试吧。"
+
 type ttsTurnEndPolicy uint8
 
 const (
@@ -542,7 +545,10 @@ func (l *LLMManager) handleLLMWithContextAndTools(
 				if llm.IsLLMErrorMessage(message) {
 					errMsg := llm.LLMErrorMessage(message)
 					log.Warnf("LLM 返回错误: %s", errMsg)
-					stop, pushErr := pushRawText(errMsg, true, nil)
+					// Speak (and keep in history) a short apology, not the raw
+					// API error: it is meaningless to the user, and as history
+					// it would be sent back to the LLM on every later turn.
+					stop, pushErr := pushRawText(llmErrorSpeech, true, nil)
 					if pushErr != nil {
 						log.Errorf("处理 LLM 错误输出失败: %v", pushErr)
 					}

@@ -295,15 +295,25 @@ func AlignToolMessages(messages []*schema.Message) []*schema.Message {
 				alignedMessages = append(alignedMessages, msg)
 			}
 		} else if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
-			// 处理 assistant 消息，检查是否有未使用的 tool_calls
+			// 只保留有 tool 回复的 tool_calls。消息本身只追加一次：并行调用多个
+			// 工具时，按 tool_call 逐个追加会把同一条 assistant 消息重复写入，
+			// API 会因"tool_calls 后缺少 tool 回复"返回 400。
+			answered := make([]schema.ToolCall, 0, len(msg.ToolCalls))
 			for _, toolCall := range msg.ToolCalls {
-				if toolCall.ID != "" {
-					if usedToolCallIDs[toolCall.ID] {
-						alignedMessages = append(alignedMessages, msg)
-					} else {
-						continue
-					}
+				if toolCall.ID != "" && usedToolCallIDs[toolCall.ID] {
+					answered = append(answered, toolCall)
 				}
+			}
+			switch {
+			case len(answered) == len(msg.ToolCalls):
+				alignedMessages = append(alignedMessages, msg)
+			case len(answered) > 0 || msg.Content != "":
+				trimmed := *msg
+				trimmed.ToolCalls = answered
+				if len(answered) == 0 {
+					trimmed.ToolCalls = nil
+				}
+				alignedMessages = append(alignedMessages, &trimmed)
 			}
 		} else {
 			// 其他类型的消息直接保留

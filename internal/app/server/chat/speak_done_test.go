@@ -93,3 +93,37 @@ func TestConfirmSpokenWithoutSpeakDoneSupport(t *testing.T) {
 		t.Error("want played when the device cannot report speak_done")
 	}
 }
+
+// Background announcements must handshake even over a warm channel, so the
+// device can refuse when the user is talking again and report speak_done.
+func TestPrepareSpeakPathAlwaysSendsSpeakRequestOnWarmChannel(t *testing.T) {
+	manager, conn := newSpeakRequestTestManager(types_conn.TransportTypeMqttUdp)
+	manager.helloInited = true
+	manager.markSpeakPathWarm(time.Now())
+	if manager.shouldSendSpeakRequest(time.Now()) {
+		t.Fatal("precondition: warm channel should normally skip speak_request")
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- manager.prepareSpeakPath("后台结果", false, true) }()
+
+	msg := waitForServerMessage(t, conn, 0)
+	if msg.Type != msgdata.ServerMessageTypeSpeakRequest {
+		t.Fatalf("expected speak_request, got %s", msg.Type)
+	}
+	if err := manager.HandleSpeakReadyMessage(&data_client.ClientMessage{
+		Type:      msgdata.MessageTypeSpeakReady,
+		SessionID: manager.clientState.SessionID,
+		State:     msgdata.MessageStateReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("prepareSpeakPath: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prepareSpeakPath did not return after speak_ready")
+	}
+}
