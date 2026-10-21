@@ -24,6 +24,13 @@ type Runner interface {
 	Run(ctx context.Context, task Task, onProgress func(string)) (string, error)
 }
 
+// DetailRunner is implemented by runners whose answer has two parts: the
+// spoken summary (returned as text) and the full answer (detail), which is
+// kept for delivery through other channels such as an IM bot.
+type DetailRunner interface {
+	RunWithDetail(ctx context.Context, task Task, onProgress func(string)) (text, detail string, err error)
+}
+
 // ResultSource is implemented by runners that keep finished tasks themselves
 // (*Client: the bridge stores them until acknowledged). The manager fetches
 // them when a device attaches and acknowledges them once spoken.
@@ -34,9 +41,11 @@ type ResultSource interface {
 
 // Result is a finished task. Err is nil on success.
 type Result struct {
-	TaskID   string
-	Task     string
-	Text     string
+	TaskID string
+	Task   string
+	Text   string // spoken summary
+	// Detail is the full answer when the bridge returned one; not spoken.
+	Detail   string
 	Err      error
 	Canceled bool
 	Finished time.Time
@@ -142,11 +151,18 @@ func (m *Manager) Submit(deviceID, text, taskContext string) (string, error) {
 
 func (m *Manager) run(ctx context.Context, deviceID string, rt *runningTask, task Task) {
 	defer rt.cancel()
-	text, err := m.runner.Run(ctx, task, func(progress string) {
+	onProgress := func(progress string) {
 		m.mu.Lock()
 		rt.info.Progress = progress
 		m.mu.Unlock()
-	})
+	}
+	var text, detail string
+	var err error
+	if dr, ok := m.runner.(DetailRunner); ok {
+		text, detail, err = dr.RunWithDetail(ctx, task, onProgress)
+	} else {
+		text, err = m.runner.Run(ctx, task, onProgress)
+	}
 	if err == nil && strings.TrimSpace(text) == "" {
 		err = errors.New("delegate bridge returned an empty result")
 	}
@@ -157,7 +173,7 @@ func (m *Manager) run(ctx context.Context, deviceID string, rt *runningTask, tas
 	m.mu.Lock()
 	d := m.device(deviceID)
 	delete(d.running, task.ID)
-	result := Result{TaskID: task.ID, Task: task.Text, Text: strings.TrimSpace(text), Err: err, Canceled: rt.canceled, Finished: m.now()}
+	result := Result{TaskID: task.ID, Task: task.Text, Text: strings.TrimSpace(text), Detail: strings.TrimSpace(detail), Err: err, Canceled: rt.canceled, Finished: m.now()}
 	d.recent = appendCapped(d.recent, result, maxRecentResults)
 	var notify func()
 	// A canceled task was requested by the user; do not announce it again.
@@ -276,9 +292,10 @@ func (m *Manager) syncFromBridge(src ResultSource, deviceID string) {
 		if containsResult(d.pending, sr.TaskID) {
 			continue
 		}
-		r := Result{TaskID: sr.TaskID, Task: sr.Task, Text: strings.TrimSpace(sr.Text), Finished: sr.FinishedAt}
+		r := Result{TaskID: sr.TaskID, Task: sr.Task, Text: strings.TrimSpace(sr.Text), Detail: strings.TrimSpace(sr.Detail), Finished: sr.FinishedAt}
 		if sr.Code != "" {
 			r.Text = ""
+			r.Detail = ""
 			r.Err = &BridgeError{Code: sr.Code, Message: sr.Message}
 		}
 		d.pending = appendCapped(d.pending, r, maxPendingResults)
@@ -355,6 +372,38 @@ func (m *Manager) Requeue(deviceID string, r Result) {
 	if len(d.pending) > maxPendingResults {
 		d.pending = d.pending[:maxPendingResults]
 	}
+}
+
+// TakeOne pops the pending result with taskID, or the oldest one when taskID
+// is empty. Used when the user asks to hear a result during a conversation.
+func (m *Manager) TakeOne(deviceID, taskID string) (Result, bool) {
+	if taskID == "" {
+		return m.TakePending(deviceID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.devs[deviceID]
+	if d == nil {
+		return Result{}, false
+	}
+	for i, r := range d.pending {
+		if r.TaskID == taskID {
+			d.pending = append(d.pending[:i:i], d.pending[i+1:]...)
+			return r, true
+		}
+	}
+	return Result{}, false
+}
+
+// Pending returns a copy of the results waiting to be spoken, oldest first.
+func (m *Manager) Pending(deviceID string) []Result {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.devs[deviceID]
+	if d == nil {
+		return nil
+	}
+	return append([]Result(nil), d.pending...)
 }
 
 // HasPending reports whether a result is waiting to be spoken.

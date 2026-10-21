@@ -1765,8 +1765,14 @@ func extractVoiceID(config map[string]interface{}) string {
 
 // generateTtsOnly 方案 C：仅做 TTS 生成，不发送；返回音频 channel 与发送完成后需调用的 ReleaseFunc
 func (t *TTSManager) generateTtsOnly(ctx context.Context, metricCycle uint64, llmResponse llm_common.LLMResponseStruct) (outputChan <-chan []byte, releaseFunc func(), err error) {
-	if strings.TrimSpace(llmResponse.Text) == "" {
+	// 字幕用原文；送给 TTS 的文本去掉 Markdown、emoji 和括号动作描写，清洗后为空则跳过
+	speakText := sanitizeTTSText(llmResponse.Text)
+	if speakText == "" {
 		return nil, nil, nil
+	}
+	if speakText != llmResponse.Text {
+		log.Debugf("TTS 文本已清洗: %q -> %q", llmResponse.Text, speakText)
+		llmResponse.Text = speakText
 	}
 	ttsWrapper, err := t.getTTSProviderInstance()
 	if err != nil {
@@ -1837,7 +1843,7 @@ func (t *TTSManager) handleDualStreamTts(item TTSQueueItem) (bool, error) {
 				if !ok {
 					return
 				}
-				text := strings.TrimSpace(resp.Text)
+				text := sanitizeTTSText(resp.Text)
 				if text == "" {
 					continue
 				}

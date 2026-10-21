@@ -984,7 +984,17 @@ func (a *ASRManager) StartAsrRecognitionLoop(
 
 					if result.EmptyReason == asr_types.EmptyReasonNoServerResponse ||
 						result.EmptyReason == asr_types.EmptyReasonProviderEmptyFinal {
-						state.Asr.CancelWithReason("ASRManager.StartAsrRecognitionLoop: empty final result from provider")
+						// Restart instead of only cancelling: a bare cancel made the
+						// next RetireAsrResult fail with context.Canceled, which ended
+						// this loop while the device kept listening (audio dropped as
+						// "client voice stop" until the session was closed).
+						if restartErr := a.RestartAsrRecognition(ctx); restartErr != nil {
+							log.Errorf("重启ASR识别失败: %v", restartErr)
+							if onError != nil {
+								onError(restartErr)
+							}
+							return
+						}
 						resumeAudioIdle()
 						continue
 					}

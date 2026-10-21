@@ -50,6 +50,9 @@ func getHTTPClient() *http.Client {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
+			// DashScope 偶尔接受请求后迟迟不回响应头；TTS 按句串行，一句卡 60 秒
+			// 会拖住整段回复。正常首包约 300ms，10 秒没有响应头就放弃这一句。
+			ResponseHeaderTimeout: 10 * time.Second,
 		}
 		httpClient = &http.Client{
 			Transport: transport,

@@ -45,6 +45,7 @@ type Frame struct {
 	TaskID     string         `json:"task_id,omitempty"`
 	DeviceID   string         `json:"device_id,omitempty"`
 	Text       string         `json:"text,omitempty"`
+	Detail     string         `json:"detail,omitempty"` // full answer; text is the spoken summary
 	Context    string         `json:"context,omitempty"`
 	NewSession bool           `json:"new_session,omitempty"`
 	Code       string         `json:"code,omitempty"`
@@ -62,6 +63,7 @@ type StoredResult struct {
 	TaskID     string    `json:"task_id"`
 	Task       string    `json:"task"`
 	Text       string    `json:"text,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
 	Code       string    `json:"code,omitempty"`
 	Message    string    `json:"message,omitempty"`
 	FinishedAt time.Time `json:"finished_at"`
@@ -119,17 +121,24 @@ func NewClient(endpoint, token string) (*Client, error) {
 // Run submits the task and blocks until the bridge returns a result, reports
 // an error, or ctx ends. onProgress, when non-nil, receives progress text.
 func (c *Client) Run(ctx context.Context, task Task, onProgress func(string)) (string, error) {
+	text, _, err := c.RunWithDetail(ctx, task, onProgress)
+	return text, err
+}
+
+// RunWithDetail is Run that also returns the full answer the bridge sends
+// next to the spoken summary (empty when the harness gave only one part).
+func (c *Client) RunWithDetail(ctx context.Context, task Task, onProgress func(string)) (string, string, error) {
 	if strings.TrimSpace(task.Text) == "" {
-		return "", errors.New("delegate task text is empty")
+		return "", "", errors.New("delegate task text is empty")
 	}
 	if task.ID == "" {
-		return "", errors.New("delegate task id is empty")
+		return "", "", errors.New("delegate task id is empty")
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+c.token)
 	conn, _, err := c.dialer.DialContext(ctx, c.url, headers)
 	if err != nil {
-		return "", fmt.Errorf("connect delegate bridge: %w", err)
+		return "", "", fmt.Errorf("connect delegate bridge: %w", err)
 	}
 	defer conn.Close()
 	conn.SetReadLimit(maxFrameBytes)
@@ -162,14 +171,14 @@ func (c *Client) Run(ctx context.Context, task Task, onProgress func(string)) (s
 
 	var ready Frame
 	if err := conn.ReadJSON(&ready); err != nil {
-		return "", c.readError(ctx, "read delegate bridge readiness", err)
+		return "", "", c.readError(ctx, "read delegate bridge readiness", err)
 	}
 	switch ready.Type {
 	case "ready":
 	case "error":
-		return "", &BridgeError{Code: ready.Code, Message: ready.Message}
+		return "", "", &BridgeError{Code: ready.Code, Message: ready.Message}
 	default:
-		return "", fmt.Errorf("delegate bridge: expected ready frame, got %q", ready.Type)
+		return "", "", fmt.Errorf("delegate bridge: expected ready frame, got %q", ready.Type)
 	}
 
 	if err := write(Frame{
@@ -180,13 +189,13 @@ func (c *Client) Run(ctx context.Context, task Task, onProgress func(string)) (s
 		Context:    task.Context,
 		NewSession: task.NewSession,
 	}); err != nil {
-		return "", c.readError(ctx, "send delegate task", err)
+		return "", "", c.readError(ctx, "send delegate task", err)
 	}
 
 	for {
 		var frame Frame
 		if err := conn.ReadJSON(&frame); err != nil {
-			return "", c.readError(ctx, "read delegate bridge response", err)
+			return "", "", c.readError(ctx, "read delegate bridge response", err)
 		}
 		if frame.TaskID != "" && frame.TaskID != task.ID {
 			continue
@@ -198,9 +207,9 @@ func (c *Client) Run(ctx context.Context, task Task, onProgress func(string)) (s
 				onProgress(frame.Text)
 			}
 		case "result":
-			return frame.Text, nil
+			return frame.Text, frame.Detail, nil
 		case "error":
-			return "", &BridgeError{Code: frame.Code, Message: frame.Message}
+			return "", "", &BridgeError{Code: frame.Code, Message: frame.Message}
 		}
 	}
 }

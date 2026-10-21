@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -21,7 +23,7 @@ const (
 	delegateIdleChecks     = 3 // consecutive idle polls before announcing
 	delegateMaxInterrupted = 3 // per result and connection; afterwards wait for the next attach
 	delegateMaxInjectFails = 3
-	delegateMaxBusy        = 20 // busy replies per connection before waiting for the next attach
+	delegateMaxBusyBackoff = 15 // busy retries back off up to this many retry delays
 )
 
 // Variables so tests can shorten them.
@@ -38,6 +40,24 @@ type speechTarget interface {
 	InjectDelegateSpeech(text string, onSpoken func(played bool)) error
 }
 
+// Optional capabilities of a speechTarget (*chat.ChatManager has all of them).
+type taskNotifier interface {
+	SendTaskReady(taskID, task string) error
+}
+
+type speechCompressor interface {
+	CompressForSpeech(ctx context.Context, task, text string, maxRunes int) (string, error)
+}
+
+type conversationSpeaker interface {
+	SpeakInTurn(ctx context.Context, text string) (bool, error)
+}
+
+const (
+	speechMaxRunes      = 150 // target length of a spoken summary
+	speechCompressAbove = 200 // longer summaries are compressed by the LLM
+)
+
 // delegateDelivery announces background task results. Results stay on the
 // agent bridge until they have been played to the end, so a device that is
 // offline, busy or interrupts the announcement hears them later.
@@ -45,13 +65,89 @@ type delegateDelivery struct {
 	lookup func(deviceID string) (speechTarget, bool)
 	mgr    *delegate.Manager
 
-	mu     sync.Mutex
-	active map[string]bool // a delivery loop runs for the device
-	again  map[string]bool // new result arrived while the loop ran
+	mu       sync.Mutex
+	active   map[string]bool   // a delivery loop runs for the device
+	again    map[string]bool   // new result arrived while the loop ran
+	notified map[string]bool   // task_id -> task_ready sent during a conversation
+	speech   map[string]string // task_id -> text to speak, computed once
 }
 
 func newDelegateDeliveryWith(mgr *delegate.Manager, lookup func(deviceID string) (speechTarget, bool)) *delegateDelivery {
-	return &delegateDelivery{lookup: lookup, mgr: mgr, active: map[string]bool{}, again: map[string]bool{}}
+	return &delegateDelivery{
+		lookup: lookup, mgr: mgr,
+		active: map[string]bool{}, again: map[string]bool{},
+		notified: map[string]bool{}, speech: map[string]string{},
+	}
+}
+
+// speechText returns the announcement for a result. A summary that is still
+// too long is compressed once by the device's LLM; on failure Announcement
+// truncates it. The text is cached so every playback says the same thing.
+func (d *delegateDelivery) speechText(t speechTarget, r delegate.Result) string {
+	if r.Err != nil {
+		return delegate.Announcement(r)
+	}
+	d.mu.Lock()
+	cached, ok := d.speech[r.TaskID]
+	d.mu.Unlock()
+	if ok {
+		return cached
+	}
+	if c, ok := t.(speechCompressor); ok && len([]rune(r.Text)) > speechCompressAbove {
+		short, err := c.CompressForSpeech(context.Background(), r.Task, r.Text, speechMaxRunes)
+		if err != nil {
+			log.Warnf("[delegate] task=%s compress failed, truncating: %v", r.TaskID, err)
+		} else {
+			r.Text = short
+		}
+	}
+	text := delegate.Announcement(r)
+	d.mu.Lock()
+	d.speech[r.TaskID] = text
+	d.mu.Unlock()
+	return text
+}
+
+// forget drops per-task state once a result has been delivered.
+func (d *delegateDelivery) forget(taskID string) {
+	d.mu.Lock()
+	delete(d.notified, taskID)
+	delete(d.speech, taskID)
+	d.mu.Unlock()
+}
+
+// notifyDuringConversation tells a talking user about results that finished:
+// a task_ready notice for the device and a one-shot hint for the next LLM
+// turn. Each result is announced this way once.
+func (d *delegateDelivery) notifyDuringConversation(deviceID string, t speechTarget) {
+	for _, r := range d.mgr.Pending(deviceID) {
+		d.mu.Lock()
+		seen := d.notified[r.TaskID]
+		d.notified[r.TaskID] = true
+		d.mu.Unlock()
+		if seen {
+			continue
+		}
+		if n, ok := t.(taskNotifier); ok {
+			if err := n.SendTaskReady(r.TaskID, r.Task); err != nil {
+				log.Warnf("[delegate] device=%s task=%s task_ready failed: %v", deviceID, r.TaskID, err)
+			}
+		}
+		chat.SetTaskHint(deviceID, fmt.Sprintf(
+			"后台任务「%s」刚刚完成了。先正常回答用户这句话，最后用一句话问用户要不要现在听结果。"+
+				"用户同意时调用 play_task_result 工具，不要自己复述结果；用户说等会儿就不用再提。",
+			truncateTask(r.Task)))
+		log.Infof("[delegate] device=%s task=%s ready during conversation, user notified", deviceID, r.TaskID)
+		go d.speechText(t, r) // precompute so playback does not wait for compression
+	}
+}
+
+func truncateTask(s string) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > 30 {
+		return string(r[:30]) + "……"
+	}
+	return string(r)
 }
 
 // newDelegateDelivery returns nil when delegate.enabled is false.
@@ -136,17 +232,17 @@ func (d *delegateDelivery) deliverAll(deviceID string) {
 		}
 
 		played := make(chan bool, 1)
-		err := cm.InjectDelegateSpeech(delegate.Announcement(r), func(ok bool) { played <- ok })
+		err := cm.InjectDelegateSpeech(d.speechText(cm, r), func(ok bool) { played <- ok })
 		if errors.Is(err, chat.ErrSpeakBusy) {
 			// The device was in a conversation after all (e.g. the user just
 			// pressed the button). Not a failure: wait for idle and try again.
+			// No cap: giving up would leave the result unspoken until the next
+			// attach. Back off instead, so speak_request (which makes the
+			// server drop mic audio while pending) is not sent every turn.
 			d.mgr.Requeue(deviceID, r)
 			busy++
 			log.Infof("[delegate] device=%s task=%s device busy (%d), retry when idle", deviceID, r.TaskID, busy)
-			if busy >= delegateMaxBusy {
-				return
-			}
-			time.Sleep(delegateRetryDelay)
+			time.Sleep(delegateRetryDelay * time.Duration(min(busy, delegateMaxBusyBackoff)))
 			continue
 		}
 		if err != nil {
@@ -166,6 +262,7 @@ func (d *delegateDelivery) deliverAll(deviceID string) {
 			if ok {
 				log.Infof("[delegate] device=%s task=%s announced", deviceID, r.TaskID)
 				d.mgr.Delivered(deviceID, r.TaskID)
+				d.forget(r.TaskID)
 				continue
 			}
 			// Interrupted (user spoke, session closed): keep it and retry once
@@ -192,6 +289,7 @@ func (d *delegateDelivery) waitIdle(deviceID string) (speechTarget, bool) {
 		}
 		if cm.IsConversationActive() {
 			idle = 0
+			d.notifyDuringConversation(deviceID, cm)
 		} else if idle++; idle >= delegateIdleChecks {
 			return cm, true
 		}

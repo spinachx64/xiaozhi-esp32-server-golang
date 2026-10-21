@@ -485,6 +485,8 @@ func (a *App) CloseAllChatManagers() {
 func (s *App) registerChatMCPTools() {
 	// 调用chat包的注册函数
 	chat.RegisterChatMCPTools()
+	// 后台长任务工具（delegate_task / task_status / cancel_task），未启用时跳过
+	s.delegate.registerTools()
 
 	log.Info("聊天相关的本地MCP工具注册完成")
 }

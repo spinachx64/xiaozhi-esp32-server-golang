@@ -62,6 +62,11 @@ type ChatManager struct {
 	speakDoneMu        sync.Mutex
 	speakDone          *speakDoneWaiter
 
+	// Last mic audio from the device (unix ms). The device streams audio only
+	// while listening, so this catches conversations the server state misses,
+	// e.g. after a filler-only ASR result was dropped.
+	lastMicAudioAt atomic.Int64
+
 	// Close 保护，防止多次关闭
 	closeOnce      sync.Once
 	managerClosing atomic.Bool
@@ -398,6 +403,9 @@ func (c *ChatManager) audioMessageLoop(ctx context.Context) {
 		}
 		if message == nil {
 			continue
+		}
+		if len(message) > micAudioMinBytes { // not a hole-punch packet
+			c.lastMicAudioAt.Store(time.Now().UnixMilli())
 		}
 
 		session := c.GetSession()
@@ -1412,6 +1420,11 @@ func shouldRetryInjectedSpeechSessionWait(err error) bool {
 		strings.Contains(msg, "正在关闭")
 }
 
+const (
+	micAudioMinBytes  = 32              // smaller UDP payloads are keepalive/hole-punch
+	micActivityWindow = 3 * time.Second // mic audio this recent means the user is in a conversation
+)
+
 func (c *ChatManager) isConversationActive() bool {
 	if c == nil || c.clientState == nil {
 		return false
@@ -1421,6 +1434,9 @@ func (c *ChatManager) isConversationActive() bool {
 	}
 	switch c.clientState.GetStatus() {
 	case ClientStatusListening, ClientStatusLLMStart, ClientStatusTTSStart:
+		return true
+	}
+	if at := c.lastMicAudioAt.Load(); at > 0 && time.Since(time.UnixMilli(at)) < micActivityWindow {
 		return true
 	}
 	session := c.GetSession()
