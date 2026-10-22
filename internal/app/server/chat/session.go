@@ -257,6 +257,27 @@ func NewChatSession(clientState *ClientState, serverTransport *ServerTransport, 
 		}
 	}
 
+	// Live subtitles while listening: forward interim ASR text as stt. The
+	// final text is still sent by the ASR loop. Repeats and filler-only
+	// partials ("嗯") are skipped.
+	var partialMu sync.Mutex
+	lastPartial := ""
+	clientState.OnAsrPartialCallback = func(text string) {
+		if isFillerOnlyASRText(text) {
+			return
+		}
+		partialMu.Lock()
+		if text == lastPartial {
+			partialMu.Unlock()
+			return
+		}
+		lastPartial = text
+		partialMu.Unlock()
+		if err := s.serverTransport.SendAsrResult(text); err != nil {
+			log.Debugf("发送ASR中间结果失败: %v", err)
+		}
+	}
+
 	return s
 }
 

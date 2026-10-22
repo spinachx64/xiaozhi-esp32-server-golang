@@ -86,6 +86,10 @@ func (a *Asr) RetireAsrResult(ctx context.Context) (asr_types.StreamingResult, b
 					a.ClientState.OnAsrFirstTextCallback(result.Text, result.IsFinal)
 				}
 
+				if result.Text != "" && !result.IsFinal && a.ClientState != nil && a.ClientState.OnAsrPartialCallback != nil {
+					a.ClientState.OnAsrPartialCallback(result.Text)
+				}
+
 				if a.AsrType == "funasr" &&
 					strings.EqualFold(a.Mode, "2pass") &&
 					strings.EqualFold(result.Mode, "2pass-online") {

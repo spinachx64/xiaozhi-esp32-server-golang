@@ -157,6 +157,10 @@ type ClientState struct {
 
 	// ASR首次返回字符的回调函数（在 session 中设置）
 	OnAsrFirstTextCallback func(text string, isFinal bool)
+
+	// Called with every non-final ASR text, so the device can show what it
+	// hears while listening (set in session).
+	OnAsrPartialCallback func(text string)
 }
 
 // IsSpeakerEnabled 检查是否启用声纹识别（从全局配置中读取）

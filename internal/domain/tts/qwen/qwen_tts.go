@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"time"
@@ -294,15 +295,19 @@ func (p *QwenTTSProvider) TextToSpeechStream(ctx context.Context, text string, s
 
 	outputChan = make(chan []byte, 100)
 
+	trace := &requestTrace{start: time.Now()}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace.clientTrace()))
+
 	go func() {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Errorf("发送千问流式请求失败: %v", err)
+			log.Errorf("发送千问流式请求失败: %v (%s)", err, trace)
 			close(outputChan)
 			return
 		}
 		defer resp.Body.Close()
+		log.Debugf("千问流式请求响应头: %s", trace)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
