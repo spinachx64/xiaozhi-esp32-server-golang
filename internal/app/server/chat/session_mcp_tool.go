@@ -256,6 +256,16 @@ func controlMusicPlayback(ctx context.Context, session *ChatSession, params *Mus
 		}
 	}
 
+	// Keep the turn open while the media plays, like play_chapter: the turn's
+	// tts stop puts an auto-mode device into listening, and that listen start
+	// suspends the media again (resume used to stop after a few words).
+	switch action {
+	case "resume", "prev", "next", "play_playlist":
+		if h := session.mediaPlayer.CurrentHandle(); h != nil {
+			_ = h.Wait(ctx)
+		}
+	}
+
 	state := session.mediaPlayer.GetState()
 	result.Status = state.Status.String()
 	result.CurrentTitle = state.CurrentTitle

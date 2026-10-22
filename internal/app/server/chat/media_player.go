@@ -526,6 +526,22 @@ func (p *SessionMediaPlayer) ReplacePlaylistAndPlayWithHandle(ctx context.Contex
 	return runtime.ReplaceStandaloneQueueAndPlayWithHandle(ctx, sources, startIndex, p.audioConfig())
 }
 
+// CurrentHandle returns a handle on the active playback, or nil when
+// nothing is playing or paused.
+func (p *SessionMediaPlayer) CurrentHandle() *MediaPlaybackHandle {
+	runtime, err := p.runtimeOrErr()
+	if err != nil {
+		return nil
+	}
+	runtime.mu.RLock()
+	active := runtime.active
+	runtime.mu.RUnlock()
+	if active == nil {
+		return nil
+	}
+	return newMediaPlaybackHandle(active)
+}
+
 func (p *SessionMediaPlayer) Pause() error {
 	runtime, err := p.runtimeOrErr()
 	if err != nil {
