@@ -1239,10 +1239,6 @@ func (l *LLMManager) GetMessages(ctx context.Context, userMessage *schema.Messag
 	if rule := spokenOutputRule(); rule != "" {
 		systemPrompt += "\n\n" + rule
 	}
-	// 后台任务在对话中完成：只在这一轮提示 LLM 询问用户要不要现在听
-	if hint := takeTaskHint(l.clientState.DeviceID); hint != "" {
-		systemPrompt += "\n\n" + hint
-	}
 
 	// 添加当前时间和日期信息
 	now := time.Now()

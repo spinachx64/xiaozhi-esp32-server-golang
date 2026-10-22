@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -35,20 +34,11 @@ type App struct {
 
 	// ChatManager管理 - 使用concurrent map
 	chatManagers cmap.ConcurrentMap[string, *chat.ChatManager]
-
-	// 后台长任务结果投递；delegate.enabled=false 时为 nil
-	delegate *delegateDelivery
 }
 
 func NewApp() *App {
-	var err error
 	app := &App{
 		chatManagers: cmap.New[*chat.ChatManager](),
-	}
-	app.delegate, err = newDelegateDelivery(app)
-	if err != nil {
-		log.Errorf("初始化 delegate 失败，后台任务功能不可用: %v", err)
-		app.delegate = nil
 	}
 	mcp.RegisterCurrentDeviceTransportResolver(func(deviceID string) string {
 		chatManager, exists := app.GetChatManager(deviceID)
@@ -58,6 +48,7 @@ func NewApp() *App {
 		return chatManager.GetTransportType()
 	})
 	app.wsServer = app.newWebSocketServer()
+	var err error
 	app.mqttUdpAdapter, err = app.newMqttUdpAdapter()
 	if err != nil {
 		log.Errorf("newMqttUdpAdapter err: %+v", err)
@@ -185,14 +176,9 @@ func (app *App) newUdpServer() (*mqtt_udp.UdpServer, error) {
 
 func (app *App) newWebSocketServer() *websocket.WebSocketServer {
 	port := viper.GetInt("websocket.port")
-	var routes func(mux *http.ServeMux)
-	if app.delegate != nil {
-		routes = app.delegate.registerRoutes
-	}
 	return websocket.NewWebSocketServer(
 		port,
 		websocket.WithAdminAuth(checkAdminToken),
-		websocket.WithRoutes(routes),
 		websocket.WithOnNewConnection(app.OnNewConnection),
 		websocket.WithOnOpenClawResponse(app.OnOpenClawResponse),
 		websocket.WithOnInjectMessage(func(deviceID, message string, skipLlm bool, autoListen bool) error {
@@ -358,12 +344,8 @@ func (a *App) OnNewConnection(transport types.IConn) {
 	// OpenClaw离线消息补发（延迟重试，避免连接刚建立时会话尚未初始化）
 	go a.replayOpenClawOfflineMessages(deviceID)
 
-	// 后台任务结果：取回 bridge 上未确认的结果，空闲时播报
-	detachDelegate := a.delegate.attach(deviceID)
-
 	// 启动ChatManager
 	go func() {
-		defer detachDelegate()
 		defer func() {
 			// ChatManager结束时，从映射中移除
 			if storedManager, exists := a.chatManagers.Get(deviceID); exists && storedManager == chatManager {
@@ -485,8 +467,6 @@ func (a *App) CloseAllChatManagers() {
 func (s *App) registerChatMCPTools() {
 	// 调用chat包的注册函数
 	chat.RegisterChatMCPTools()
-	// 后台长任务工具（delegate_task / task_status / cancel_task），未启用时跳过
-	s.delegate.registerTools()
 
 	log.Info("聊天相关的本地MCP工具注册完成")
 }
