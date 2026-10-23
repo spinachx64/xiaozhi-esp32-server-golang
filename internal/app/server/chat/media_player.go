@@ -1176,7 +1176,10 @@ func (r *deviceMediaRuntime) pausePlayback(requireActive bool, reason mediaPause
 		return nil
 	}
 
-	active.setPaused(true)
+	// Every listen start suspends the media; only the first one is a real
+	// pause. Re-sending "pause" would bring the device's dimmed ring back
+	// after it was cleared on idle.
+	changed := active.setPaused(true)
 	exclusiveAttach = r.exclusiveAttachment
 	r.exclusiveAttachment = nil
 	active.setExclusiveHeld(false)
@@ -1189,7 +1192,9 @@ func (r *deviceMediaRuntime) pausePlayback(requireActive bool, reason mediaPause
 	r.mu.Unlock()
 
 	releaseMediaAttachment(exclusiveAttach)
-	sendMediaProgress(progressTo, progress)
+	if changed {
+		sendMediaProgress(progressTo, progress)
+	}
 	return nil
 }
 
