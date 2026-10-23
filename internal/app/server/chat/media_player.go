@@ -187,6 +187,9 @@ type deviceMediaRuntime struct {
 	attachmentWaitCh    chan struct{}
 	resumeOnAttach      bool
 	exclusiveAttachment *mediaSessionAttachment
+	durationMs          int64 // current track length, 0 when unknown
+	mediaBook           string
+	mediaChapter        string
 }
 
 type SessionMediaPlayer struct {
@@ -923,6 +926,13 @@ func (r *deviceMediaRuntime) recoverActivePlayback(trigger mediaRecoveryTrigger)
 		return fmt.Errorf("媒体播放器未初始化")
 	}
 
+	var progress *mediaProgressMessage
+	var progressTo *mediaSessionAttachment
+	defer func() {
+		if progress != nil {
+			sendMediaProgress(progressTo, *progress)
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -941,6 +951,8 @@ func (r *deviceMediaRuntime) recoverActivePlayback(trigger mediaRecoveryTrigger)
 	r.resumeOnAttach = false
 	r.state.Status = play_music.StatusPlaying
 	r.state.UpdatedAt = time.Now().UnixMilli()
+	progress = &mediaProgressMessage{State: mediaProgressResume, PositionMs: r.state.PositionMs, DurationMs: r.durationMs}
+	progressTo = r.attachment
 	log.Infof("设备 %s 执行媒体恢复, trigger=%s, mode=resume_active", r.deviceID, trigger)
 	return nil
 }
@@ -998,6 +1010,7 @@ func (r *deviceMediaRuntime) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	active = r.active
 	exclusiveAttach = r.exclusiveAttachment
+	progressTo := r.attachment
 	if active != nil {
 		active.setExclusiveHeld(false)
 	}
@@ -1013,6 +1026,9 @@ func (r *deviceMediaRuntime) Stop(ctx context.Context) error {
 
 	releaseMediaAttachment(exclusiveAttach)
 	stopOldPlayback(active)
+	if active != nil {
+		sendMediaProgress(progressTo, mediaProgressMessage{State: mediaProgressStop})
+	}
 	return nil
 }
 
@@ -1168,9 +1184,12 @@ func (r *deviceMediaRuntime) pausePlayback(requireActive bool, reason mediaPause
 	r.resumeOnAttach = false
 	r.state.Status = play_music.StatusPaused
 	r.state.UpdatedAt = time.Now().UnixMilli()
+	progress := mediaProgressMessage{State: mediaProgressPause, PositionMs: r.state.PositionMs, DurationMs: r.durationMs}
+	progressTo := r.attachment
 	r.mu.Unlock()
 
 	releaseMediaAttachment(exclusiveAttach)
+	sendMediaProgress(progressTo, progress)
 	return nil
 }
 
@@ -1360,6 +1379,7 @@ func (r *deviceMediaRuntime) markPlaybackError(active *activeMediaPlayback, err 
 	r.state.ErrMsg = err.Error()
 	r.state.UpdatedAt = time.Now().UnixMilli()
 	r.refreshPublicStateLocked()
+	go sendMediaProgress(r.attachment, mediaProgressMessage{State: mediaProgressStop})
 }
 
 func (r *deviceMediaRuntime) markPlaybackStopped(active *activeMediaPlayback, status play_music.PlaybackStatus, errMsg string) {
@@ -1377,6 +1397,7 @@ func (r *deviceMediaRuntime) markPlaybackStopped(active *activeMediaPlayback, st
 	r.state.ErrMsg = errMsg
 	r.state.UpdatedAt = time.Now().UnixMilli()
 	r.refreshPublicStateLocked()
+	go sendMediaProgress(r.attachment, mediaProgressMessage{State: mediaProgressStop})
 }
 
 func (r *deviceMediaRuntime) runPlayback(active *activeMediaPlayback) {
@@ -1540,9 +1561,16 @@ func (r *deviceMediaRuntime) playItem(active *activeMediaPlayback, item MediaPla
 	source := item.Source
 	title := deriveMediaTitle(source)
 	playText := ""
-	if title != "" {
+	// Book chapters show title and progress via the media message instead.
+	if title != "" && source.Meta["book"] == "" {
 		playText = fmt.Sprintf("正在播放音乐: %s", title)
 	}
+	duration := probeMediaDurationMs(source)
+	r.mu.Lock()
+	r.durationMs = duration
+	r.mediaBook = source.Meta["book"]
+	r.mediaChapter = source.Meta["chapter"]
+	r.mu.Unlock()
 
 	audioChan, err := r.openSourceAudioStream(active.ctx, source, active)
 	if err != nil {
@@ -1550,17 +1578,22 @@ func (r *deviceMediaRuntime) playItem(active *activeMediaPlayback, item MediaPla
 	}
 
 	gatedChan := r.wrapMediaAudioStream(active.ctx, audioChan, active)
-	if err := r.streamMediaAudio(active.ctx, gatedChan, active, playText); err != nil {
+	if err := r.streamMediaAudio(active.ctx, gatedChan, active, playText, title); err != nil {
 		return err
 	}
 
 	log.Infof("媒体播放完成: %s", title)
+	r.mu.RLock()
+	progressTo := r.attachment
+	r.mu.RUnlock()
+	sendMediaProgress(progressTo, mediaProgressMessage{State: mediaProgressStop})
 	return nil
 }
 
-func (r *deviceMediaRuntime) streamMediaAudio(ctx context.Context, audioChan <-chan []byte, active *activeMediaPlayback, playText string) error {
+func (r *deviceMediaRuntime) streamMediaAudio(ctx context.Context, audioChan <-chan []byte, active *activeMediaPlayback, playText, title string) error {
 	var (
 		startedOn      *mediaSessionAttachment
+		progressOn     *mediaSessionAttachment
 		enqueuedFrames bool
 	)
 	frameDurationMs := r.currentFrameDurationMs()
@@ -1610,6 +1643,16 @@ func (r *deviceMediaRuntime) streamMediaAudio(ctx context.Context, audioChan <-c
 
 			sendError := func(err error) {
 				r.handleAttachmentFailure(active, attachment, err)
+			}
+
+			if progressOn != attachment {
+				// First frame on this channel (also after a reconnect).
+				r.mu.RLock()
+				msg := mediaProgressMessage{State: mediaProgressStart, Title: title, Book: r.mediaBook, Chapter: r.mediaChapter,
+					PositionMs: r.state.PositionMs, DurationMs: r.durationMs}
+				r.mu.RUnlock()
+				sendMediaProgress(attachment, msg)
+				progressOn = attachment
 			}
 
 			if startedOn != attachment && playText != "" {

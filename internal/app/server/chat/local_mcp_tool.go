@@ -39,7 +39,7 @@ func InitChatLocalMCPTools() {
 		},*/
 		"exit_conversation": {
 			Name:        "exit_conversation",
-			Description: "当用户明确表示要结束对话、退出系统或告别时使用，用于优雅地关闭当前聊天会话",
+			Description: "当用户明确表示要结束对话、退出系统或告别时必须调用，例如“退出”“退出吧”“不听了”“不聊了”“拜拜”“再见”“先这样”“关了吧”。调用后会话才会真正结束，不能只回复一句告别。用于优雅地关闭当前聊天会话",
 			Params:      struct{}{},
 			Handle:      exitConversationHandler,
 		},

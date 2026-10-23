@@ -121,12 +121,17 @@ func playChapterHandler(ctx context.Context, args string) (string, error) {
 	if c.Title != "" {
 		title += " " + c.Title
 	}
+	chapterLabel := fmt.Sprintf("第%d章", c.Chapter)
+	if c.Title != "" {
+		chapterLabel += " " + c.Title
+	}
 	source := MediaSourceDescriptor{
 		Title:      title,
 		MIMEType:   chapterMIMEType(c.Path),
 		SourceType: MediaSourceTypeLocalFile,
-		Meta:       map[string]string{"source": string(MediaSourceTypeLocalFile), "book": c.Book},
-		Local:      &LocalMediaSource{Path: c.Path},
+		// book/chapter let the device show them on separate lines.
+		Meta:  map[string]string{"source": string(MediaSourceTypeLocalFile), "book": c.Book, "chapter": chapterLabel},
+		Local: &LocalMediaSource{Path: c.Path},
 	}
 	log.Infof("设备 %s 开始朗读: %s (%s)", cm.DeviceID, title, c.Path)
 
