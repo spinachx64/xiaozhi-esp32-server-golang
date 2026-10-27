@@ -30,6 +30,8 @@ const (
 
 	McpReadResourcePageSize       = 100 * 1024
 	McpReadResourceStreamDoneFlag = "[DONE]"
+
+	bookToolContextRule = "图书工具调用规则：先根据当前请求和上下文中的书名、章节名及工具结果，匹配已明确给出的 book_id、chapter_id，并直接传给后续工具；传 book_id 时同时附上已知书名。已有满足请求的信息时不要重复调用 search_books 或 latest_chapters。只有信息缺失、对应关系不明确或用户要求刷新最新信息时才查询。ID 必须来自已有工具结果，不得编造，也不得把列表序号或第几章当作章节 ID。复用 ID 不替代阅读权限检查和购买确认。口头回答不要念 ID。"
 )
 
 // Context key 类型用于避免冲突
@@ -1239,6 +1241,7 @@ func (l *LLMManager) GetMessages(ctx context.Context, userMessage *schema.Messag
 	if rule := spokenOutputRule(); rule != "" {
 		systemPrompt += "\n\n" + rule
 	}
+	systemPrompt += "\n\n" + bookToolContextRule
 
 	// 添加当前时间和日期信息
 	now := time.Now()

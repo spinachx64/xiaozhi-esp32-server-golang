@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,28 @@ func TestGetMessagesIgnoresToolRoundMessagesOutsideNoneMode(t *testing.T) {
 	}
 	if messages[1].Content != historyUser.Content {
 		t.Fatalf("expected short memory mode to keep dialogue history, got %q", messages[1].Content)
+	}
+}
+
+func TestGetMessagesKeepsBookIDsAndContextRuleWithAgentPrompt(t *testing.T) {
+	manager := newTestLLMManager(data_client.MemoryModeShort)
+	manager.clientState.SystemPrompt = "这是管理后台的智能体提示词"
+	manager.clientState.AddMessage(schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call_chapters", Type: "function",
+		Function: schema.FunctionCall{Name: "latest_chapters", Arguments: `{"book":"剑来","book_id":7}`},
+	}}))
+	result := "《剑来》（book_id=7）最近更新的 1 章，最新的在前：\n1. 第八章（chapter_id=99）"
+	manager.clientState.AddMessage(schema.ToolMessage(result, "call_chapters"))
+
+	messages := manager.GetMessages(context.Background(), schema.UserMessage("播放这一章"), 10, nil)
+	if len(messages) != 4 || messages[0].Role != schema.System {
+		t.Fatalf("expected system, tool call, tool result and user, got %+v", messages)
+	}
+	if !strings.Contains(messages[0].Content, manager.clientState.SystemPrompt) || !strings.Contains(messages[0].Content, bookToolContextRule) {
+		t.Fatalf("agent prompt and book context rule must both reach the model: %q", messages[0].Content)
+	}
+	if messages[2].Role != schema.Tool || messages[2].Content != result {
+		t.Fatalf("book and chapter IDs must reach the next request unchanged: %+v", messages[2])
 	}
 }
 
