@@ -1805,6 +1805,10 @@ func (r *deviceMediaRuntime) streamMCPResourceToPipe(ctx context.Context, source
 		}
 
 		readArgs := cloneMediaSourceAnyMap(source.ReadArgs)
+		if readArgs == nil {
+			// The clone returns nil for empty args (no direct audio URL).
+			readArgs = make(map[string]any, 2)
+		}
 		readArgs["start"] = start
 		readArgs["end"] = start + pageSize
 
@@ -1819,6 +1823,15 @@ func (r *deviceMediaRuntime) streamMCPResourceToPipe(ctx context.Context, source
 
 		hasData := false
 		for _, content := range resourceResult.Contents {
+			if start == 0 {
+				if duration := mcpMediaDurationMs(content); duration > 0 {
+					r.mu.Lock()
+					if r.active == active {
+						r.durationMs = duration
+					}
+					r.mu.Unlock()
+				}
+			}
 			audioContent, ok := content.(mcp_go.BlobResourceContents)
 			if !ok {
 				continue

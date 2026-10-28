@@ -12,6 +12,7 @@ import (
 	"time"
 	. "xiaozhi-esp32-server-golang/internal/data/client"
 	"xiaozhi-esp32-server-golang/internal/domain/asr"
+	"xiaozhi-esp32-server-golang/internal/domain/asr/diagnostics"
 	asr_types "xiaozhi-esp32-server-golang/internal/domain/asr/types"
 	"xiaozhi-esp32-server-golang/internal/domain/audio"
 	chathooks "xiaozhi-esp32-server-golang/internal/domain/chat/hooks"
@@ -39,6 +40,7 @@ type ASRManager struct {
 	// ASR 资源作为私有字段管理
 	asrResource *pool.ResourceWrapper[asr.AsrProvider]
 	resourceMu  sync.RWMutex // 保护资源访问
+	debugTrace  atomic.Pointer[diagnostics.Trace]
 }
 
 func NewASRManager(clientState *ClientState, serverTransport *ServerTransport, opts ...ASRManagerOption) *ASRManager {
@@ -254,6 +256,7 @@ func (a *ASRManager) ProcessVadAudio(ctx context.Context) {
 				var vadPcmData []float32
 				pcmData := pcmFrame[:n]
 				speakerPcmData := pcmFrame[:n]
+				a.debugTrace.Load().PCM("decoded", pcmData)
 
 				// 检查帧大小是否一致（正常情况下应该一致，但不一致时使用实际值）
 				if n != frameSize {
@@ -594,12 +597,20 @@ func (a *ASRManager) RestartAsrRecognition(ctx context.Context) error {
 	}
 
 	// 重新创建ASR上下文和通道
+	a.debugTrace.Store(nil)
+	if state.DeviceConfig.Asr.Provider == "aliyun_qwen3" {
+		var trace *diagnostics.Trace
+		ctx, trace = diagnostics.New(ctx, state.DeviceID, state.InputAudioFormat.SampleRate, state.InputAudioFormat.Channels)
+		a.debugTrace.Store(trace)
+		trace.Debugf("listen start mode=%s provider=aliyun_qwen3", state.ListenMode)
+	}
 	state.Asr.Ctx, state.Asr.Cancel = context.WithCancel(ctx)
 	state.Asr.AsrAudioChannel = make(chan []float32, 100)
 
 	// 重新启动流式识别
 	asrResultChannel, err := asrProvider.StreamingRecognize(state.Asr.Ctx, state.Asr.AsrAudioChannel)
 	if err != nil {
+		a.debugTrace.Load().Close()
 		// 识别失败，归还资源（因为资源可能已损坏）
 		a.releaseResource()
 		log.Errorf("重启ASR流式识别失败: %v", err)

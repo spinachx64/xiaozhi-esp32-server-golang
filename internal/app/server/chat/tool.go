@@ -255,7 +255,8 @@ func (e *toolCallExecutor) executeToolCall(order int, toolCall schema.ToolCall) 
 		return toolCallExecutionResult{order: order, message: resultMessage}
 	}
 	costTs := time.Now().UnixMilli() - startTs
-	if len(fcResult) > 2048 {
+	// A resource link carries a playback token; keep it out of the logs.
+	if len(fcResult) > 2048 || strings.Contains(fcResult, `"resource_link"`) {
 		log.Infof("工具调用结果 len: %d, 耗时: %dms", len(fcResult), costTs)
 	} else {
 		log.Infof("工具调用结果 %s, 耗时: %dms", fcResult, costTs)
@@ -301,7 +302,7 @@ func (e *toolCallExecutor) executeToolCall(order int, toolCall schema.ToolCall) 
 				break
 			}
 			if resourceLink, ok := content.(mcp_go.ResourceLink); ok {
-				log.Debugf("调用工具 %s 返回资源链接: %+v", toolName, resourceLink)
+				log.Debugf("调用工具 %s 返回资源链接: name=%s mime=%s", toolName, resourceLink.Name, resourceLink.MIMEType)
 				mcpContent = "执行成功"
 				if err := e.manager.handleResourceLink(e.ctx, resourceLink, toolObj, &e.mediaWg); err != nil {
 					log.Errorf("mcp播放资源链接失败: %v", err)
@@ -434,18 +435,26 @@ func buildMediaSourceFromResourceLink(resourceLink mcp_go.ResourceLink, toolCall
 		toolName = info.Name
 	}
 
+	meta := map[string]string{
+		"source":       string(MediaSourceTypeMCPResource),
+		"server_name":  serverName,
+		"endpoint":     endpointSnapshot,
+		"resource_uri": resourceLink.URI,
+		"audio_url":    directAudioURL,
+		"tool_name":    toolName,
+	}
+	// Book chapters are named "《书名》章节名": split them so the device shows
+	// both lines and no "正在播放音乐" subtitle is sent.
+	if book, chapter, ok := splitBookTitle(title); ok {
+		meta["book"] = book
+		meta["chapter"] = chapter
+	}
+
 	return MediaSourceDescriptor{
 		Title:      title,
 		MIMEType:   resourceLink.MIMEType,
 		SourceType: MediaSourceTypeMCPResource,
-		Meta: map[string]string{
-			"source":       string(MediaSourceTypeMCPResource),
-			"server_name":  serverName,
-			"endpoint":     endpointSnapshot,
-			"resource_uri": resourceLink.URI,
-			"audio_url":    directAudioURL,
-			"tool_name":    toolName,
-		},
+		Meta:       meta,
 		MCP: &MCPMediaSource{
 			ServerName:       serverName,
 			EndpointSnapshot: endpointSnapshot,

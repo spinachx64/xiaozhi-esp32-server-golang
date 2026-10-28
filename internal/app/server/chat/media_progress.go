@@ -8,7 +8,24 @@ import (
 	log "xiaozhi-esp32-server-golang/logger"
 
 	"github.com/hajimehoshi/go-mp3"
+	mcp_go "github.com/mark3labs/mcp-go/mcp"
 )
+
+// MCP audio resources may include duration metadata before their first blob.
+// Unknown contents stay compatible with resource providers that only send audio.
+func mcpMediaDurationMs(content mcp_go.ResourceContents) int64 {
+	metadata, ok := content.(mcp_go.TextResourceContents)
+	if !ok || metadata.MIMEType != "application/json" || len(metadata.Text) > 4096 {
+		return 0
+	}
+	var value struct {
+		DurationMs int64 `json:"duration_ms"`
+	}
+	if json.Unmarshal([]byte(metadata.Text), &value) != nil || value.DurationMs <= 0 || value.DurationMs > 7*24*60*60*1000 {
+		return 0
+	}
+	return value.DurationMs
+}
 
 // Media progress messages let a device show a progress ring for long media
 // such as book chapters. They are sent only on state changes; the device
